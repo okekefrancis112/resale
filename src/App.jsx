@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { ShoppingBag, Plane, Shield, Zap, Check, ArrowRight, AlertCircle, Users, Download, X } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize Supabase client
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function ResaleLanding() {
   const [formData, setFormData] = useState({
@@ -16,6 +22,10 @@ export default function ResaleLanding() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [signups, setSignups] = useState([]);
   const [loadingSignups, setLoadingSignups] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const ADMIN_EMAIL = 'okeke98@gmail.com';
 
   useEffect(() => {
     loadSignupCount();
@@ -24,12 +34,14 @@ export default function ResaleLanding() {
 
   const loadSignupCount = async () => {
     try {
-      const result = await window.storage.get('waitlist_count');
-      if (result && result.value) {
-        setTotalSignups(parseInt(result.value));
-      }
+      const { count, error } = await supabase
+        .from('waitlist')
+        .select('*', { count: 'exact', head: true });
+
+      if (error) throw error;
+      setTotalSignups(count || 0);
     } catch (error) {
-      console.log('No previous signups');
+      console.error('Error loading signup count:', error);
     }
   };
 
@@ -95,20 +107,22 @@ export default function ResaleLanding() {
     setLoading(true);
 
     try {
-      const timestamp = new Date().toISOString();
-      const signupId = `signup_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const { data, error } = await supabase
+        .from('waitlist')
+        .insert([
+          {
+            name: formData.name,
+            email: formData.email,
+            phone: formData.phone,
+            user_type: formData.userType,
+            reason: formData.reason || null
+          }
+        ])
+        .select();
 
-      const signupData = {
-        ...formData,
-        timestamp,
-        id: signupId
-      };
+      if (error) throw error;
 
-      await window.storage.set(signupId, JSON.stringify(signupData));
-
-      const newCount = totalSignups + 1;
-      await window.storage.set('waitlist_count', newCount.toString());
-      setTotalSignups(newCount);
+      await loadSignupCount();
 
       trackEvent('waitlist_signup', {
         user_type: formData.userType,
@@ -156,27 +170,16 @@ export default function ResaleLanding() {
   const loadAllSignups = async () => {
     setLoadingSignups(true);
     try {
-      const result = await window.storage.list('signup_');
-      if (result && result.keys) {
-        const allSignups = [];
+      const { data, error } = await supabase
+        .from('waitlist')
+        .select('*')
+        .order('timestamp', { ascending: false });
 
-        for (const key of result.keys) {
-          try {
-            const signupResult = await window.storage.get(key);
-            if (signupResult && signupResult.value) {
-              const signup = JSON.parse(signupResult.value);
-              allSignups.push(signup);
-            }
-          } catch (error) {
-            console.error('Error loading signup:', key, error);
-          }
-        }
-
-        allSignups.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        setSignups(allSignups);
-      }
+      if (error) throw error;
+      setSignups(data || []);
     } catch (error) {
       console.error('Error loading signups:', error);
+      alert('Failed to load signups. Please try again.');
     }
     setLoadingSignups(false);
   };
@@ -187,7 +190,7 @@ export default function ResaleLanding() {
       s.name,
       s.email,
       s.phone,
-      s.userType,
+      s.user_type,
       s.reason || '',
       new Date(s.timestamp).toLocaleString()
     ]);
@@ -209,10 +212,27 @@ export default function ResaleLanding() {
   };
 
   const toggleAdmin = () => {
-    if (!showAdmin) {
-      loadAllSignups();
+    if (!isAdmin) {
+      setShowAdminLogin(true);
+    } else {
+      if (!showAdmin) {
+        loadAllSignups();
+      }
+      setShowAdmin(!showAdmin);
     }
-    setShowAdmin(!showAdmin);
+  };
+
+  const handleAdminLogin = () => {
+    if (adminEmail.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase()) {
+      setIsAdmin(true);
+      setShowAdminLogin(false);
+      setShowAdmin(true);
+      loadAllSignups();
+      trackEvent('admin_login_success');
+    } else {
+      alert('Access denied. Only authorized admin can view signups.');
+      trackEvent('admin_login_failed');
+    }
   };
 
   if (submitted) {
@@ -244,7 +264,52 @@ export default function ResaleLanding() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-green-50">
-      {showAdmin && (
+      {showAdminLogin && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-gray-900">Admin Login</h2>
+              <button
+                onClick={() => setShowAdminLogin(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <p className="text-gray-600 mb-6">
+              Enter your admin email to access the waitlist dashboard
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="adminEmail" className="block text-sm font-medium text-gray-700 mb-2">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  id="adminEmail"
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                  placeholder="your@email.com"
+                  autoFocus
+                />
+              </div>
+
+              <button
+                onClick={handleAdminLogin}
+                className="w-full bg-orange-600 text-white py-3 rounded-lg font-semibold hover:bg-orange-700 transition"
+              >
+                Access Admin Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAdmin && isAdmin && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
             <div className="bg-gradient-to-r from-orange-600 to-orange-700 p-6 flex justify-between items-center">
@@ -270,7 +335,13 @@ export default function ResaleLanding() {
               </div>
             </div>
 
-            <div className="overflow-auto max-h-[calc(90vh-120px)]">
+            <div className="bg-orange-100 border-l-4 border-orange-600 p-4 mx-6">
+              <p className="text-sm text-orange-900">
+                <span className="font-semibold">Logged in as:</span> {ADMIN_EMAIL}
+              </p>
+            </div>
+
+            <div className="overflow-auto max-h-[calc(90vh-180px)]">
               {loadingSignups ? (
                 <div className="flex items-center justify-center py-20">
                   <div className="text-gray-600">Loading signups...</div>
@@ -301,11 +372,11 @@ export default function ResaleLanding() {
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{signup.phone}</td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                              signup.userType === 'buyer'
+                              signup.user_type === 'buyer'
                                 ? 'bg-green-100 text-green-800'
                                 : 'bg-orange-100 text-orange-800'
                             }`}>
-                              {signup.userType}
+                              {signup.user_type}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-sm text-gray-600 max-w-xs truncate">{signup.reason || '-'}</td>
